@@ -46,9 +46,15 @@ app.post("/api/payments/initiate", async (req, res) => {
     
     console.log(`💰 Payment requested: ${amount} KES to ${phone} for plan: ${plan}`);
     
-    // Format phone
+    // Format phone number - Lipana expects +254 format
     let formattedPhone = phone.replace(/\s+/g, '');
-    if (formattedPhone.startsWith('0')) formattedPhone = '254' + formattedPhone.substring(1);
+    if (formattedPhone.startsWith('0')) {
+      formattedPhone = '+254' + formattedPhone.substring(1);
+    } else if (formattedPhone.startsWith('254')) {
+      formattedPhone = '+' + formattedPhone;
+    } else if (!formattedPhone.startsWith('+')) {
+      formattedPhone = '+' + formattedPhone;
+    }
     
     const checkoutId = `CHK_${Date.now()}_${Math.random().toString(36).substring(7)}`;
     const reference = `BLACK${Date.now()}`;
@@ -57,18 +63,15 @@ app.post("/api/payments/initiate", async (req, res) => {
     let lipanaResponse;
     try {
       lipanaResponse = await axios.post(
-        'https://api.lipana.dev/v1/stk-push',
+        'https://api.lipana.dev/v1/transactions/push-stk',
         {
           phone: formattedPhone,
-          amount: Math.round(amount),
-          reference: reference,
-          description: `Blackecho ${plan} Subscription`,
-          callback_url: process.env.MPESA_CALLBACK_URL,
+          amount: Math.round(amount)
         },
         {
           headers: {
-            'Authorization': `Bearer ${process.env.LIPANA_API_KEY}`,
-            'Content-Type': 'application/json',
+            'x-api-key': process.env.LIPANA_API_KEY,
+            'Content-Type': 'application/json'
           }
         }
       );
@@ -91,7 +94,7 @@ app.post("/api/payments/initiate", async (req, res) => {
       status: 'pending',
       checkoutId,
       reference,
-      lipanaTransactionId: lipanaResponse.data?.transactionId,
+      lipanaTransactionId: lipanaResponse.data?.data?.transactionId,
       timestamp: admin.firestore.FieldValue.serverTimestamp()
     });
     
@@ -102,7 +105,7 @@ app.post("/api/payments/initiate", async (req, res) => {
       amount, 
       plan, 
       status: 'pending',
-      lipanaTransactionId: lipanaResponse.data?.transactionId
+      lipanaTransactionId: lipanaResponse.data?.data?.transactionId
     });
     
     console.log(`📱 STK Push sent to ${formattedPhone}`);
@@ -112,7 +115,7 @@ app.post("/api/payments/initiate", async (req, res) => {
       message: "STK Push sent successfully",
       checkoutRequestId: checkoutId,
       reference: reference,
-      lipanaTransactionId: lipanaResponse.data?.transactionId
+      lipanaTransactionId: lipanaResponse.data?.data?.transactionId
     });
     
   } catch (error) {
@@ -130,20 +133,34 @@ app.post("/api/mpesa/callback", async (req, res) => {
   console.log("📞 Webhook received:", JSON.stringify(req.body, null, 2));
   
   const callbackData = req.body;
-  const checkoutId = callbackData?.checkoutRequestId;
-  const resultCode = callbackData?.resultCode;
-  const mpesaReceipt = callbackData?.mpesaReceiptNumber;
+  const event = callbackData?.event;
+  const eventData = callbackData?.data;
+  const transactionId = eventData?.transactionId;
+  const checkoutId = eventData?.checkoutRequestID;
+  const amount = eventData?.amount;
+  const mpesaReceipt = eventData?.mpesaReceiptNumber;
   
-  if (checkoutId) {
-    const payment = payments.get(checkoutId);
-    
-    if (resultCode === 0 || resultCode === '0') {
-      // Payment successful
-      if (payment) {
-        payment.status = 'completed';
-        payment.mpesaReceipt = mpesaReceipt;
-        payments.set(checkoutId, payment);
-      }
+  // Find payment by transactionId or checkoutId
+  let payment = null;
+  if (checkoutId && payments.has(checkoutId)) {
+    payment = payments.get(checkoutId);
+  } else {
+    // Search in Firebase if not in memory
+    const snapshot = await db.collection('paymentAttempts')
+      .where('lipanaTransactionId', '==', transactionId)
+      .limit(1)
+      .get();
+    if (!snapshot.empty) {
+      const doc = snapshot.docs[0];
+      payment = { userId: doc.data().userId, plan: doc.data().plan, amount: doc.data().amount };
+      checkoutId = doc.id;
+    }
+  }
+  
+  if (event === 'transaction.success') {
+    // Payment successful
+    if (payment) {
+      if (checkoutId) payments.set(checkoutId, { ...payment, status: 'completed', mpesaReceipt });
       
       // Update Firebase
       await db.collection('paymentAttempts').doc(checkoutId).update({
@@ -153,7 +170,7 @@ app.post("/api/mpesa/callback", async (req, res) => {
       });
       
       // Activate premium subscription
-      if (payment && payment.userId) {
+      if (payment.userId) {
         const endDate = new Date();
         endDate.setDate(endDate.getDate() + 30);
         
@@ -172,18 +189,17 @@ app.post("/api/mpesa/callback", async (req, res) => {
         
         console.log(`✅ Premium activated for user: ${payment.userId}`);
       }
-      console.log(`✅ Payment successful: ${checkoutId}`);
-    } else {
-      // Payment failed
-      if (payment) {
-        payment.status = 'failed';
-        payments.set(checkoutId, payment);
-      }
+      console.log(`✅ Payment successful: ${transactionId}`);
+    }
+  } else if (event === 'transaction.failed') {
+    // Payment failed
+    if (payment && checkoutId) {
+      if (checkoutId) payments.set(checkoutId, { ...payment, status: 'failed' });
       await db.collection('paymentAttempts').doc(checkoutId).update({
         status: 'failed',
         failedAt: admin.firestore.FieldValue.serverTimestamp()
       });
-      console.log(`❌ Payment failed: ${checkoutId}`);
+      console.log(`❌ Payment failed: ${transactionId}`);
     }
   }
   
