@@ -1,4 +1,4 @@
 ﻿node_modules/
 .env
-*.json
+blackguard-a2e23-firebase-adminsdk-fbsvc-*.json
 .DS_Store
