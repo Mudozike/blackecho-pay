@@ -39,12 +39,12 @@ app.get("/", (req, res) => {
   });
 });
 
-// INITIATE PAYMENT
+// 🔥 INITIATE PAYMENT - REAL LIPANA INTEGRATION
 app.post("/api/payments/initiate", async (req, res) => {
   try {
     const { phone, amount, plan, userId } = req.body;
     
-    console.log(`💰 Payment requested: ${amount} KES to ${phone}`);
+    console.log(`💰 Payment requested: ${amount} KES to ${phone} for plan: ${plan}`);
     
     // Format phone
     let formattedPhone = phone.replace(/\s+/g, '');
@@ -52,6 +52,35 @@ app.post("/api/payments/initiate", async (req, res) => {
     
     const checkoutId = `CHK_${Date.now()}_${Math.random().toString(36).substring(7)}`;
     const reference = `BLACK${Date.now()}`;
+    
+    // 🔥 CALL LIPANA API FOR REAL STK PUSH
+    let lipanaResponse;
+    try {
+      lipanaResponse = await axios.post(
+        'https://api.lipana.dev/v1/stk-push',
+        {
+          phone: formattedPhone,
+          amount: Math.round(amount),
+          reference: reference,
+          description: `Blackecho ${plan} Subscription`,
+          callback_url: process.env.MPESA_CALLBACK_URL,
+        },
+        {
+          headers: {
+            'Authorization': `Bearer ${process.env.LIPANA_API_KEY}`,
+            'Content-Type': 'application/json',
+          }
+        }
+      );
+      console.log('📱 Lipana Response:', lipanaResponse.data);
+    } catch (lipanaError) {
+      console.error('Lipana API Error:', lipanaError.response?.data || lipanaError.message);
+      return res.status(400).json({
+        success: false,
+        message: "Failed to initiate STK Push",
+        error: lipanaError.response?.data?.message || lipanaError.message
+      });
+    }
     
     // Save to Firebase
     await db.collection('paymentAttempts').doc(checkoutId).set({
@@ -62,19 +91,28 @@ app.post("/api/payments/initiate", async (req, res) => {
       status: 'pending',
       checkoutId,
       reference,
+      lipanaTransactionId: lipanaResponse.data?.transactionId,
       timestamp: admin.firestore.FieldValue.serverTimestamp()
     });
     
     // Store in memory
-    payments.set(checkoutId, { userId, phone: formattedPhone, amount, plan, status: 'pending' });
+    payments.set(checkoutId, { 
+      userId, 
+      phone: formattedPhone, 
+      amount, 
+      plan, 
+      status: 'pending',
+      lipanaTransactionId: lipanaResponse.data?.transactionId
+    });
     
-    console.log(`📱 STK Push initiated to ${formattedPhone}`);
+    console.log(`📱 STK Push sent to ${formattedPhone}`);
     
     res.json({
       success: true,
       message: "STK Push sent successfully",
       checkoutRequestId: checkoutId,
-      reference: reference
+      reference: reference,
+      lipanaTransactionId: lipanaResponse.data?.transactionId
     });
     
   } catch (error) {
@@ -87,48 +125,52 @@ app.post("/api/payments/initiate", async (req, res) => {
   }
 });
 
-// MPESA CALLBACK (Webhook)
+// 🔥 MPESA CALLBACK (Lipana Webhook)
 app.post("/api/mpesa/callback", async (req, res) => {
   console.log("📞 Webhook received:", JSON.stringify(req.body, null, 2));
   
   const callbackData = req.body;
-  const checkoutId = callbackData?.Body?.stkCallback?.CheckoutRequestID;
-  const resultCode = callbackData?.Body?.stkCallback?.ResultCode;
+  const checkoutId = callbackData?.checkoutRequestId;
+  const resultCode = callbackData?.resultCode;
+  const mpesaReceipt = callbackData?.mpesaReceiptNumber;
   
   if (checkoutId) {
     const payment = payments.get(checkoutId);
     
-    if (resultCode === 0) {
+    if (resultCode === 0 || resultCode === '0') {
       // Payment successful
       if (payment) {
         payment.status = 'completed';
+        payment.mpesaReceipt = mpesaReceipt;
         payments.set(checkoutId, payment);
+      }
+      
+      // Update Firebase
+      await db.collection('paymentAttempts').doc(checkoutId).update({
+        status: 'completed',
+        mpesaReceipt: mpesaReceipt,
+        completedAt: admin.firestore.FieldValue.serverTimestamp()
+      });
+      
+      // Activate premium subscription
+      if (payment && payment.userId) {
+        const endDate = new Date();
+        endDate.setDate(endDate.getDate() + 30);
         
-        // Update Firebase
-        await db.collection('paymentAttempts').doc(checkoutId).update({
-          status: 'completed',
-          completedAt: admin.firestore.FieldValue.serverTimestamp()
-        });
+        await db.collection('subscriptions').doc(payment.userId).set({
+          userId: payment.userId,
+          plan: payment.plan,
+          amount: payment.amount,
+          currency: 'KES',
+          status: 'active',
+          startDate: admin.firestore.FieldValue.serverTimestamp(),
+          endDate: admin.firestore.Timestamp.fromDate(endDate),
+          autoRenew: true,
+          mpesaReceipt: mpesaReceipt,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp()
+        }, { merge: true });
         
-        // Activate premium subscription
-        if (payment.userId) {
-          const endDate = new Date();
-          endDate.setDate(endDate.getDate() + 30);
-          
-          await db.collection('subscriptions').doc(payment.userId).set({
-            userId: payment.userId,
-            plan: payment.plan,
-            amount: payment.amount,
-            currency: 'KES',
-            status: 'active',
-            startDate: admin.firestore.FieldValue.serverTimestamp(),
-            endDate: admin.firestore.Timestamp.fromDate(endDate),
-            autoRenew: true,
-            updatedAt: admin.firestore.FieldValue.serverTimestamp()
-          }, { merge: true });
-          
-          console.log(`✅ Premium activated for user: ${payment.userId}`);
-        }
+        console.log(`✅ Premium activated for user: ${payment.userId}`);
       }
       console.log(`✅ Payment successful: ${checkoutId}`);
     } else {
@@ -195,4 +237,5 @@ app.get("/api/test", (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`✅ Backend running on http://localhost:${PORT}`);
+  console.log(`📱 Environment: ${process.env.MPESA_ENVIRONMENT || 'development'}`);
 });
