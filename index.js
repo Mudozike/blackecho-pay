@@ -7,17 +7,13 @@ require("dotenv").config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Initialize Firebase Admin
+// Initialize Firebase Admin using secret file
 try {
-  const serviceAccount = {
-    projectId: process.env.FIREBASE_PROJECT_ID,
-    clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-    privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n')
-  };
+  const serviceAccount = require('/etc/secrets/firebase-key.json');
   admin.initializeApp({
     credential: admin.credential.cert(serviceAccount)
   });
-  console.log("✅ Firebase initialized");
+  console.log("✅ Firebase initialized from secret file");
 } catch (error) {
   console.log("⚠️ Firebase error:", error.message);
 }
