@@ -1,4 +1,4 @@
-﻿const express = require("express");
+const express = require("express");
 const cors = require("cors");
 const axios = require("axios");
 const admin = require("firebase-admin");
@@ -13,9 +13,9 @@ try {
   admin.initializeApp({
     credential: admin.credential.cert(serviceAccount)
   });
-  console.log("✅ Firebase initialized from secret file");
+  console.log("? Firebase initialized from secret file");
 } catch (error) {
-  console.log("⚠️ Firebase error:", error.message);
+  console.log("?? Firebase error:", error.message);
 }
 const db = admin.firestore();
 
@@ -35,12 +35,12 @@ app.get("/", (req, res) => {
   });
 });
 
-// 🔥 INITIATE PAYMENT - REAL LIPANA INTEGRATION
+// ?? INITIATE PAYMENT - REAL LIPANA INTEGRATION
 app.post("/api/payments/initiate", async (req, res) => {
   try {
     const { phone, amount, plan, userId } = req.body;
     
-    console.log(`💰 Payment requested: ${amount} KES to ${phone} for plan: ${plan}`);
+    console.log(`?? Payment requested: ${amount} KES to ${phone} for plan: ${plan}`);
     
     // Format phone number - Lipana expects +254 format
     let formattedPhone = phone.replace(/\s+/g, '');
@@ -55,7 +55,7 @@ app.post("/api/payments/initiate", async (req, res) => {
     const checkoutId = `CHK_${Date.now()}_${Math.random().toString(36).substring(7)}`;
     const reference = `BLACK${Date.now()}`;
     
-    // 🔥 CALL LIPANA API FOR REAL STK PUSH
+    // ?? CALL LIPANA API FOR REAL STK PUSH
     let lipanaResponse;
     try {
       lipanaResponse = await axios.post(
@@ -71,7 +71,7 @@ app.post("/api/payments/initiate", async (req, res) => {
           }
         }
       );
-      console.log('📱 Lipana Response:', lipanaResponse.data);
+      console.log('?? Lipana Response:', lipanaResponse.data);
     } catch (lipanaError) {
       console.error('Lipana API Error:', lipanaError.response?.data || lipanaError.message);
       return res.status(400).json({
@@ -104,7 +104,7 @@ app.post("/api/payments/initiate", async (req, res) => {
       lipanaTransactionId: lipanaResponse.data?.data?.transactionId
     });
     
-    console.log(`📱 STK Push sent to ${formattedPhone}`);
+    console.log(`?? STK Push sent to ${formattedPhone}`);
     
     res.json({
       success: true,
@@ -124,9 +124,9 @@ app.post("/api/payments/initiate", async (req, res) => {
   }
 });
 
-// 🔥 MPESA CALLBACK (Lipana Webhook)
+// ?? MPESA CALLBACK (Lipana Webhook)
 app.post("/api/mpesa/callback", async (req, res) => {
-  console.log("📞 Webhook received:", JSON.stringify(req.body, null, 2));
+  console.log("?? Webhook received:", JSON.stringify(req.body, null, 2));
   
   const callbackData = req.body;
   const event = callbackData?.event;
@@ -183,9 +183,9 @@ app.post("/api/mpesa/callback", async (req, res) => {
           updatedAt: admin.firestore.FieldValue.serverTimestamp()
         }, { merge: true });
         
-        console.log(`✅ Premium activated for user: ${payment.userId}`);
+        console.log(`? Premium activated for user: ${payment.userId}`);
       }
-      console.log(`✅ Payment successful: ${transactionId}`);
+      console.log(`? Payment successful: ${transactionId}`);
     }
   } else if (event === 'transaction.failed') {
     // Payment failed
@@ -195,7 +195,7 @@ app.post("/api/mpesa/callback", async (req, res) => {
         status: 'failed',
         failedAt: admin.firestore.FieldValue.serverTimestamp()
       });
-      console.log(`❌ Payment failed: ${transactionId}`);
+      console.log(`? Payment failed: ${transactionId}`);
     }
   }
   
@@ -248,6 +248,7 @@ app.get("/api/test", (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`✅ Backend running on http://localhost:${PORT}`);
-  console.log(`📱 Environment: ${process.env.MPESA_ENVIRONMENT || 'development'}`);
+  console.log(`? Backend running on http://localhost:${PORT}`);
+  console.log(`?? Environment: ${process.env.MPESA_ENVIRONMENT || 'development'}`);
 });
+
